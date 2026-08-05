@@ -1,0 +1,10 @@
+pywebview
+pywin32
+jieba
+pypinyin
+requests
+Pillow
+pywxdump
+sqlcipher3
+uiautomation
+comtypes

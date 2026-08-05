@@ -1,0 +1,30 @@
+{
+  "patent_dirs": "",
+  "_patent_dirs说明": "专利证书根目录。留空则自动检测(开发模式用项目目录, 打包模式用exe同目录)。将1/2/3三个证书文件夹放在此目录下即可。",
+  "llm": {
+    "enabled": false,
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "api_key": "",
+    "model": "ep-m-20260713192703-97vzc",
+    "timeout": 30,
+    "extra_body": {
+      "thinking": {
+        "type": "disabled"
+      }
+    },
+    "_说明": "已接入火山引擎方舟(豆包)API。extra_body用于关闭豆包深度思考(开着会超时)。换 Kimi/DeepSeek 等其他 OpenAI 兼容接口时把 extra_body 改成 {}。api_key 留空则纯本地BM25运行。",
+    "pricing": {
+      "input": 0.8,
+      "output": 2.0,
+      "_说明": "模型定价(元/百万token)。input=输入价格, output=输出价格。按你的模型实际价格改。默认豆包lite价格。"
+    }
+  },
+  "window": {
+    "width": 700,
+    "height": 780,
+    "on_top": true,
+    "hotkey": "ctrl+alt+q",
+    "_hotkey说明": "全局热键唤起/隐藏窗口, 需重启App生效",
+    "attach_mode": "split"
+  }
+}

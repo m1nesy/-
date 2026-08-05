@@ -1,0 +1,29 @@
+# 构建产物
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.spec
+
+# 证书源文件（太大，不入库）
+1/
+2/
+3/
+
+# 临时/诊断文件
+decrypt_merge_tmp/
+*.png
+*.jpg
+!kb/images/*
+
+# 用户数据
+*.bak
+
+# IDE
+.vscode/
+.idea/
+
+# 环境
+venv/
+env/
