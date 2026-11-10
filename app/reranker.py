@@ -2,14 +2,26 @@
 """大模型重排序模块
 把客户对话上下文 + BM25 召回的候选话术发给大模型（OpenAI 兼容接口，默认 Kimi），
 让模型选出最合适的 3 条并给出推荐理由。
-任何失败（无 key/超时/解析失败）都返回 None，由上层降级为纯 BM25 排序。
+未启用时返回 None；调用失败抛出脱敏错误，由上层保留 BM25 结果并提示用户。
 """
 import json
 import re
 import time
+from urllib.parse import urlsplit
 
 import requests
-from storage import YONGLIANG_LUJING, du_json, yuanzixie_json
+from storage import YONGLIANG_LUJING, gengxin_json
+
+
+class DamoxingCuowu(Exception):
+    """可展示给用户的模型错误，不包含请求头、密钥或服务端响应正文。"""
+
+    def __init__(self, daima, xiaoxi):
+        super().__init__(xiaoxi)
+        self.daima = daima
+
+    def shuju(self):
+        return {"code": self.daima, "message": str(self)}
 
 # 模型定价（元/百万 token），可 override
 # 默认定价表：输入每百万token 0.8元，输出每百万token 2.0元
@@ -86,12 +98,9 @@ def _jilu_yongliang(moxing, yongliang, dingjia= None):
         hui_zong["calls"] = hui_zong.get("calls", 0) + 1
         hui_zong["last_model"] = moxing
 
-    # 轻量写入，不用 update_json 的锁（单线程 pywebview 无并发风险）
-    # 步骤：先读取当前用量文件，调用更新函数修改文档，再原子写回
+    # pywebview 的多个调用可能并发；在同一文件锁内更新累计用量。
     try:
-        wendang = du_json(YONGLIANG_LUJING, {"records": [], "summary": {}})
-        gengxin_qi(wendang)
-        yuanzixie_json(YONGLIANG_LUJING, wendang)
+        gengxin_json(YONGLIANG_LUJING, lambda: {"records": [], "summary": {}}, gengxin_qi)
     except Exception:
         # 用量记录写入失败不影响主流程，静默忽略
         pass
@@ -170,11 +179,12 @@ def goujian_yonghu_tishici(xiaoxi_liebiao, houxuan, jieduan_tishi= "") :
 
     # ---- 第四步：组装完整的用户提示词 ----
     # 格式：【阶段信息】+【对话记录】+【候选话术】+ 选择指令
+    houxuan_neirong = "\n".join(houxuan_wenben)
     return f"""{jieduan_bufen}【对话记录】
 {duihuajilu}
 
 【候选话术】
-{"\n".join(houxuan_wenben)}
+{houxuan_neirong}
 
 请选出真正适合此刻发给客户的话术（最多3条）；如果都不合适，返回 need_draft=true。"""
 
@@ -224,7 +234,7 @@ class Chongpaiqi:
     1. chongpai() - 从候选话术中选出最匹配当前对话的几条
     2. shengcheng_huifu() - 当候选都不合适时，基于公司资料生成回复草稿
 
-    两种方法都调用 OpenAI 兼容接口（默认 Kimi），失败时返回 None 由上层降级处理。
+    两种方法都调用 OpenAI 兼容接口，失败时抛出 DamoxingCuowu 由上层降级处理。
     """
 
     def __init__(self, peizhi):
@@ -266,6 +276,53 @@ class Chongpaiqi:
         # 模型定价（元/百万 token），可通过 config.json 中 llm.pricing 字段覆盖
         self.dingjia = dict(damoxing_peizhi.get("pricing", MOREN_DINGJIA))
 
+    def _qingqiu(self, qingqiuti):
+        """统一处理传输和认证错误；重定向时不转发 Bearer 密钥。"""
+        try:
+            dizhi = urlsplit(self.jichu_url)
+            if (dizhi.scheme != "https" or not dizhi.hostname or dizhi.username
+                    or dizhi.password or dizhi.query or dizhi.fragment):
+                raise ValueError
+            dizhi.port  # 校验端口格式
+        except ValueError:
+            raise DamoxingCuowu("invalid_url", "模型服务地址必须是有效的 HTTPS 地址，且不能包含账号、查询参数或片段。") from None
+
+        try:
+            xiangying = requests.post(
+                f"{self.jichu_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.miyao}", "Content-Type": "application/json"},
+                json=qingqiuti,
+                timeout=self.chaoshi,
+                allow_redirects=False,
+            )
+            if 300 <= xiangying.status_code < 400:
+                raise DamoxingCuowu("redirect", "模型服务地址发生重定向，请在配置中填写最终的 HTTPS 地址。")
+            xiangying.raise_for_status()
+        except requests.HTTPError as cuowu:
+            daima = cuowu.response.status_code if cuowu.response is not None else 0
+            if daima == 401:
+                raise DamoxingCuowu("authentication", "API Key 验证失败，请在设置中更新密钥。") from None
+            if daima == 403:
+                raise DamoxingCuowu("permission", "当前 API Key 无权使用该模型，请检查服务商的权限配置。") from None
+            if daima == 429:
+                raise DamoxingCuowu("rate_limit", "模型服务调用受限，请稍后重试或检查额度。") from None
+            raise DamoxingCuowu("http_error", "模型服务请求失败，请稍后重试并检查服务配置。") from None
+        except requests.Timeout:
+            raise DamoxingCuowu("timeout", "模型服务响应超时，请稍后重试。") from None
+        except requests.RequestException:
+            raise DamoxingCuowu("network", "暂时无法连接模型服务，请检查网络。") from None
+
+        try:
+            xiangyingti = xiangying.json()
+            neirong = xiangyingti["choices"][0]["message"]["content"]
+            yongliang = _jilu_yongliang(self.moxing, xiangyingti.get("usage"), self.dingjia)
+            shuju = _tiqu_json(neirong)
+            if not isinstance(shuju, dict):
+                raise ValueError
+            return shuju, yongliang
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+            raise DamoxingCuowu("invalid_response", "模型返回格式异常，请重试；本地检索仍可使用。") from None
+
     def chongpai(self, xiaoxi_liebiao, houxuan, zuidao_shu= 3, jieduan_tishi= ""):
         """对候选话术进行智能重排序
 
@@ -279,7 +336,7 @@ class Chongpaiqi:
 
         返回:
             成功: {"picks": [{"id","reason"},...], "need_draft", "usage": {...}}
-            失败（由上层降级为纯BM25排序）
+            未启用时返回 None；失败时抛出 DamoxingCuowu，由上层降级为本地排序
         """
         # 如果重排器未启用或没有候选话术，直接返回None
         if not self.qiyong or not houxuan:
@@ -299,30 +356,7 @@ class Chongpaiqi:
             # 合并额外参数（如关闭深度思考等平台特有参数）
             qingqiuti.update(self.ewai_canshu)
 
-            # ---- 第二步：发送HTTP请求到LLM API ----
-            xiangying = requests.post(
-                f"{self.jichu_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.miyao}",
-                    "Content-Type": "application/json",
-                },
-                json=qingqiuti,
-                timeout=self.chaoshi,
-            )
-            # 检查HTTP状态码，非2xx将抛出HTTPError异常
-            xiangying.raise_for_status()
-
-            # ---- 第三步：解析API响应 ----
-            # 提取响应JSON体
-            xiangyingti = xiangying.json()
-            # 提取模型返回的文本内容
-            neirong = xiangyingti["choices"][0]["message"]["content"]
-
-            # 记录本次API调用的token用量和费用
-            yongliang_xinxi = _jilu_yongliang(self.moxing, xiangyingti.get("usage"), self.dingjia)
-
-            # 从模型输出中宽容提取JSON数据
-            jiexi_shuju = _tiqu_json(neirong)
+            jiexi_shuju, yongliang_xinxi = self._qingqiu(qingqiuti)
 
             # ---- 第四步：构建有效候选ID集合 ----
             # 从所有候选话术中提取ID，用于校验模型返回的picks
@@ -356,10 +390,10 @@ class Chongpaiqi:
                 jieguo["usage"] = yongliang_xinxi
             return jieguo
 
-        except Exception:
-            # 任何异常（网络错误、超时、JSON解析失败等）都返回None
-            # 由上层调用者降级为纯BM25排序
-            return None
+        except DamoxingCuowu:
+            raise
+        except (ValueError, TypeError, KeyError, AttributeError):
+            raise DamoxingCuowu("invalid_response", "模型返回的推荐格式异常，已使用本地检索。") from None
 
     def shengcheng_huifu(self, xiaoxi_liebiao, shishi_ziliao, jieduan_tishi= ""):
         """泛化问题兜底：基于话术库事实资料，生成一条微信回复草稿
@@ -374,7 +408,7 @@ class Chongpaiqi:
 
         返回:
             成功: {"reply": "回复内容", "used_facts": "依据说明", "usage": {...}}
-            失败"""
+            未启用时返回 None；失败时抛出 DamoxingCuowu"""
         # 未启用或没有消息时直接返回None
         if not self.qiyong or not xiaoxi_liebiao:
             return None
@@ -415,27 +449,7 @@ class Chongpaiqi:
             # 合并额外参数
             qingqiuti.update(self.ewai_canshu)
 
-            # ---- 第五步：发送HTTP请求 ----
-            xiangying = requests.post(
-                f"{self.jichu_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.miyao}",
-                    "Content-Type": "application/json",
-                },
-                json=qingqiuti,
-                timeout=self.chaoshi,
-            )
-            xiangying.raise_for_status()
-
-            # ---- 第六步：解析响应 ----
-            xiangyingti = xiangying.json()
-            neirong = xiangyingti["choices"][0]["message"]["content"]
-
-            # 记录本次调用的token用量
-            yongliang_xinxi = _jilu_yongliang(self.moxing, xiangyingti.get("usage"), self.dingjia)
-
-            # 宽容提取JSON数据
-            jiexi_shuju = _tiqu_json(neirong)
+            jiexi_shuju, yongliang_xinxi = self._qingqiu(qingqiuti)
 
             # ---- 第七步：提取回复内容 ----
             # 获取reply字段，去除首尾空白
@@ -454,6 +468,7 @@ class Chongpaiqi:
                 jieguo["usage"] = yongliang_xinxi
             return jieguo
 
-        except Exception:
-            # 任何异常都返回None，由上层处理
-            return None
+        except DamoxingCuowu:
+            raise
+        except (ValueError, TypeError, KeyError, AttributeError):
+            raise DamoxingCuowu("invalid_response", "模型返回的草稿格式异常，请重试。") from None

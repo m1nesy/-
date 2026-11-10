@@ -14,6 +14,7 @@ from pathlib import Path
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 TH32CS_SNAPPROCESS = 0x00000002
 INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+CLIENT_PROCESS_NAMES = {"wechat.exe", "weixin.exe", "chatapp.exe"}
 
 
 class PROCESSENTRY32W(ctypes.Structure):
@@ -31,6 +32,24 @@ class PROCESSENTRY32W(ctypes.Structure):
     ]
 
 
+def _kernel32():
+    """声明句柄类型，避免 64 位 Windows 将进程/快照句柄截断。"""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for name in ("Process32FirstW", "Process32NextW"):
+        function = getattr(kernel32, name)
+        function.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        function.restype = wintypes.BOOL
+    return kernel32
+
+
 def parse_major(version: str):
     """返回 3、4 或 unknown；版本缺失时绝不猜测。"""
     match = re.match(r"\s*(\d+)(?:\.\d+)*", version or "")
@@ -41,7 +60,7 @@ def parse_major(version: str):
 
 
 def _process_image_path(pid: int):
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _kernel32()
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         return ""
@@ -57,12 +76,12 @@ def _process_image_path(pid: int):
 
 def is_chatapp_process(pid: int):
     """判断给定进程 ID 是否属于聊天软件进程。"""
-    return Path(_process_image_path(pid)).name.lower() in {"chatapp.exe", "weixin.exe"}
+    return Path(_process_image_path(pid)).name.lower() in CLIENT_PROCESS_NAMES
 
 
 def find_chatapp_processes():
     """返回运行中聊天软件进程的 PID 和可执行文件路径。"""
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = _kernel32()
     snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if snapshot == INVALID_HANDLE_VALUE:
         return []
@@ -72,7 +91,7 @@ def find_chatapp_processes():
         entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
         ok = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
         while ok:
-            if entry.szExeFile.lower() in {"chatapp.exe", "weixin.exe"}:
+            if entry.szExeFile.lower() in CLIENT_PROCESS_NAMES:
                 found.append({"pid": int(entry.th32ProcessID), "path": _process_image_path(entry.th32ProcessID)})
             ok = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
     finally:
@@ -100,7 +119,7 @@ def documents_dir():
 
 def find_legacy_layouts():
     """发现旧版消息布局的元数据，不读取数据库内容。"""
-    root = documents_dir() / "ChatApp Files"
+    root = documents_dir() / "WeChat Files"
     layouts = []
     try:
         accounts = list(root.iterdir()) if root.is_dir() else []

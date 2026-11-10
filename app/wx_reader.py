@@ -8,8 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-from wechat_probe import probe as probe_wechat
-from wechat_probe import public_diagnostics
+from chatapp_detector import detector as probe_wechat, public_diagnostics
 
 POLL_INTERVAL = 2.0
 CONTACT_CACHE_TTL = 600

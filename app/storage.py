@@ -11,7 +11,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import time
 from pathlib import Path
 
 
@@ -248,32 +247,23 @@ def baocun_mimi(zhi):
     """
     # 将值转为字符串并去除首尾空白
     zhi = str(zhi or "").strip()
-    # 确保密钥文件所在目录存在
-    MIMI_LUJING.parent.mkdir(parents=True, exist_ok=True)
-    # 如果值为空，则删除已存在的密钥文件（表示清除密钥）
-    if not zhi:
+    with _huoqu_suo(MIMI_LUJING):
+        MIMI_LUJING.parent.mkdir(parents=True, exist_ok=True)
+        if not zhi:
+            MIMI_LUJING.unlink(missing_ok=True)
+            return
+        import win32crypt
+        # 第二个参数是数据描述；不使用额外熵或机器范围标志。
+        jiami = win32crypt.CryptProtectData(zhi.encode("utf-8"), "PatentSalesPrompter", None, None, None, 0)
+        miaoshuzi, linshi = tempfile.mkstemp(prefix="llm-key.", suffix=".tmp", dir=MIMI_LUJING.parent)
         try:
-            MIMI_LUJING.unlink()
-        except FileNotFoundError:
-            # 文件本来就不存在，无需处理
-            pass
-        return
-    # 导入 Windows DPAPI 加密模块（仅在需要时导入）
-    import win32crypt
-    # 调用 CryptProtectData 对 UTF-8 编码后的密钥进行加密
-    # 第二个参数 "PatentSalesPrompter" 为可选熵值，增加安全性
-    jiami = win32crypt.CryptProtectData(
-        zhi.encode("utf-8"),
-        "PatentSalesPrompter",
-        None,
-        None,
-        None,
-        0
-    )
-    # 先写入临时文件，再原子替换，避免写入过程中断电导致文件损坏
-    linshi = MIMI_LUJING.with_suffix(".tmp")
-    linshi.write_bytes(jiami)
-    os.replace(linshi, MIMI_LUJING)
+            with os.fdopen(miaoshuzi, "wb") as wenjian:
+                wenjian.write(jiami)
+                wenjian.flush()
+                os.fsync(wenjian.fileno())
+            os.replace(linshi, MIMI_LUJING)
+        finally:
+            Path(linshi).unlink(missing_ok=True)
 
 
 def jiazai_mimi():
@@ -309,6 +299,27 @@ def jiazai_mimi():
 # 首次运行时创建所有必需的目录，并从资源目录复制默认数据文件
 # ============================================================
 
+def _qingli_mingwen_peizhi(lujing, qianyi=False):
+    """先保护有效密钥，再原子清理旧配置；不创建含密钥的备份。"""
+    if not lujing.exists():
+        return
+    peizhi = du_json(lujing, {})
+    if not isinstance(peizhi, dict) or not isinstance(peizhi.get("llm"), dict):
+        return
+    llm = peizhi["llm"]
+    if "api_key" not in llm:
+        return
+    miyao = str(llm.get("api_key") or "").strip()
+    if not miyao:
+        return
+    if qianyi and miyao and not MIMI_LUJING.exists():
+        # 加密失败时保留原文件，以免迁移丢失唯一密钥。
+        baocun_mimi(miyao)
+    llm.pop("api_key", None)
+    llm["credential_store"] = "dpapi" if MIMI_LUJING.exists() else ""
+    yuanzixie_json(lujing, peizhi)
+
+
 def chushihua_yonghu_shuju():
     """初始化用户数据目录结构，首次运行时从资源目录复制默认文件。
 
@@ -331,24 +342,20 @@ def chushihua_yonghu_shuju():
     # ---- 步骤2：初始化主配置文件 ----
     # 资源目录中的默认配置文件路径
     moren_peizhi = ZIYUAN_MULU / "config.json"
-    # 只有当用户配置文件不存在时才进行初始化
-    if not PEIZHI_LUJING.exists():
-        # 从资源目录读取默认配置
-        peizhi = du_json(moren_peizhi, {})
-        # 检查旧版配置中是否包含明文 API Key（需要迁移到 DPAPI 加密存储）
-        yiliu_miyao = str(peizhi.get("llm", {}).get("api_key", "")).strip()
-        if yiliu_miyao:
-            # 存在旧版明文密钥：先备份旧配置文件
-            beifen_wenjian = YONGHU_MULU / f"legacy-config-{time.strftime('%Y%m%d-%H%M%S')}.json"
-            shutil.copy2(moren_peizhi, beifen_wenjian)
-            # 将明文密钥迁移到 DPAPI 加密存储
-            baocun_mimi(yiliu_miyao)
-            # 清除配置文件中的明文密钥字段
-            peizhi.setdefault("llm", {})["api_key"] = ""
-            # 标记密钥存储方式为 dpapi
-            peizhi["llm"]["credential_store"] = "dpapi"
-        # 将处理后的配置写入用户配置文件
-        yuanzixie_json(PEIZHI_LUJING, peizhi)
+    with _huoqu_suo(PEIZHI_LUJING):
+        if not PEIZHI_LUJING.exists():
+            # 首次运行允许迁移资源配置；后续清空密钥不会从旧备份恢复。
+            _qingli_mingwen_peizhi(moren_peizhi, qianyi=True)
+            yuanzixie_json(PEIZHI_LUJING, du_json(moren_peizhi, {}))
+        else:
+            # 同时支持已经存在的旧版用户配置，已有加密密钥优先。
+            _qingli_mingwen_peizhi(PEIZHI_LUJING, qianyi=True)
+            _qingli_mingwen_peizhi(moren_peizhi)
+        # 仅清理本应用已知的旧配置副本，保留其余设置；不恢复过期密钥。
+        beifen_liebiao = [PEIZHI_LUJING.with_suffix(".json.bak")]
+        beifen_liebiao.extend(YONGHU_MULU.glob("legacy-config-*.json"))
+        for beifen in beifen_liebiao:
+            _qingli_mingwen_peizhi(beifen)
 
     # ---- 步骤3：复制默认知识库文件 ----
     moren_zhishiku = ZIYUAN_MULU / "kb" / "knowledge_base.json"
@@ -400,13 +407,11 @@ def jiazai_peizhi():
         包含所有配置项的字典，其中 llm.api_key 已从加密存储中加载
     """
     # 确保用户数据目录和默认文件已就绪
-    chushihua_yonghu_shuju()
-    # 读取配置文件
-    peizhi = du_json(PEIZHI_LUJING, {})
-    # 从 DPAPI 加密存储中加载 API 密钥，注入到配置字典
-    peizhi.setdefault("llm", {})["api_key"] = jiazai_mimi()
-    # 返回完整配置
-    return peizhi
+    with _huoqu_suo(PEIZHI_LUJING):
+        chushihua_yonghu_shuju()
+        peizhi = du_json(PEIZHI_LUJING, {})
+        peizhi.setdefault("llm", {})["api_key"] = jiazai_mimi()
+        return peizhi
 
 
 # ============================================================
@@ -427,17 +432,10 @@ def baocun_peizhi(peizhi):
         peizhi: 包含所有配置项的字典
     """
     # 确保用户数据目录和默认文件已就绪
-    chushihua_yonghu_shuju()
-    # 通过 JSON 序列化/反序列化实现深拷贝，避免修改调用方传入的原始字典
-    qingli = json.loads(json.dumps(peizhi))
-    # 从配置中提取 API 密钥（取出后从配置字典中删除）
-    miyao = str(qingli.setdefault("llm", {}).pop("api_key", "") or "").strip()
-    # 将密钥单独保存到 DPAPI 加密存储
-    baocun_mimi(miyao)
-    # 更新 credential_store 字段，标记密钥的存储方式
-    if miyao:
-        qingli["llm"]["credential_store"] = "dpapi"
-    else:
-        qingli["llm"]["credential_store"] = ""
-    # 将清理后的配置（不含明文密钥）原子化写入磁盘，同时创建备份
-    yuanzixie_json(PEIZHI_LUJING, qingli, beifen=True)
+    with _huoqu_suo(PEIZHI_LUJING):
+        chushihua_yonghu_shuju()
+        qingli = json.loads(json.dumps(peizhi))
+        miyao = str(qingli.setdefault("llm", {}).pop("api_key", "") or "").strip()
+        baocun_mimi(miyao)
+        qingli["llm"]["credential_store"] = "dpapi" if miyao else ""
+        yuanzixie_json(PEIZHI_LUJING, qingli, beifen=True)
