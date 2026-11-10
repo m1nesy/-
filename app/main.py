@@ -15,6 +15,7 @@ import threading  # 多线程库
 import time  # 时间库
 from ctypes import wintypes  # Windows 数据类型
 from pathlib import Path  # 路径处理库
+from uuid import uuid4
 
 # ===== 开发/打包模式自适应 =====
 # 判断当前是否为打包后的可执行文件运行
@@ -49,7 +50,8 @@ import subprocess  # 子进程管理库 # noqa: E402
 CHUANGKOU_BIAOTI = "专利销售智能提词器"
 
 # 开机自启用的启动路径（打包后直接用 exe，开发模式用 pythonw.exe）
-PYTHONW_LUJING = sys.executable if _shifou_dabao else r"D:\anaconda\pythonw.exe"
+_pythonw_houxuan = Path(sys.executable).with_name("pythonw.exe")
+PYTHONW_LUJING = str(_pythonw_houxuan) if not _shifou_dabao and _pythonw_houxuan.exists() else sys.executable
 
 
 class Api:
@@ -85,6 +87,8 @@ class Api:
         self.weixin_duquqi = None  # 聊天消息读取器
         self.weixin_uia_duquqi = None  # 聊天窗口读取器
         # ----- 消息接入状态标记 -----
+        self._jiantie_jiantingqi = None
+        self._jiantie_qiyong = False
         self._weixin_zhunbei = False  # 消息接入是否就绪
         self._weixin_moshi = "disabled"  # 消息读取模式
         self._weixin_chushihua_suo = threading.Lock()  # 初始化锁，防止重复初始化消息接入
@@ -108,10 +112,7 @@ class Api:
             zhuangtai["attach"] = {"enabled": False, "chat_title": ""}
         zhuangtai["send_target"] = self.fasongqi.tracker.status()  # 获取发送目标状态
         # 粘贴辅助状态
-        if hasattr(self, "_jiantie_tingzhe"):
-            zhuangtai["clipboard_listening"] = self._jiantie_tingzhe
-        else:
-            zhuangtai["clipboard_listening"] = False
+        zhuangtai["clipboard_listening"] = self._jiantie_qiyong
         zhuangtai["wx_ready"] = self._weixin_zhunbei  # 消息接入就绪状态
         zhuangtai["wx_mode"] = self._weixin_moshi  # 消息读取模式
         zhuangtai["wx_listening"] = self._weixin_qiyong()  # 消息是否在读取
@@ -382,7 +383,7 @@ class Api:
         try:
             if shaixuan is None:
                 shaixuan = {}
-            jieguo = self.zhuanli_sousuo.sousuo(chaxun, shaixuan, dingbu_N=dingbu_N)
+            jieguo = self.zhuanli_sousuo.sousuo(chaxun, shaixuan, zuiduo_jieguo=dingbu_N)
             return {"ok": True, "results": jieguo, "total": len(jieguo)}
         except Exception as cuowu:
             return {"ok": False, "error": str(cuowu), "results": []}
@@ -437,7 +438,7 @@ class Api:
         """重新加载专利知识库"""
         try:
             self.zhuanli_sousuo.chongxinzairu()
-            return {"ok": True, "total": self.zhuanli_sousuo.zongshu()}
+            return {"ok": True, "total": self.zhuanli_sousuo.zongshu}
         except Exception as cuowu:
             return {"ok": False, "error": str(cuowu)}
 
@@ -451,9 +452,8 @@ class Api:
             peizhi = jiazai_peizhi()
             peizhi["patent_dirs"] = jichu_mulu
             baocun_peizhi(peizhi)
-            if jichu_mulu:
-                self.zhuanli_sousuo.shezhi_jichu(jichu_mulu)
-            self.zhuanli_sousuo.chongxin_jiazai()
+            self.zhuanli_sousuo.shezhi_zhuanli_genmulu(jichu_mulu)
+            self.zhuanli_sousuo.chongxinzairu()
             return {"ok": True, "patent_base": jichu_mulu, "total": self.zhuanli_sousuo.zongshu}
         except Exception as cuowu:
             return {"ok": False, "error": str(cuowu)}
@@ -506,8 +506,8 @@ class Api:
         """
         try:
             # 先抑制粘贴辅助，防止自己复制的内容被读取
-            if hasattr(self, "_jiantie_tingzhe") and self._jiantie_tingzhe:
-                self._jiantie_tingzhe.suppress(wenben)
+            if self._jiantie_jiantingqi:
+                self._jiantie_jiantingqi.suppress(wenben)
             import win32clipboard  # Windows剪贴板API
             import win32con  # Windows常量
             win32clipboard.OpenClipboard()  # 打开剪贴板
@@ -571,10 +571,10 @@ class Api:
     # ===== 剪贴板自动监听 =====
     def set_clipboard_listen(self, qiyong):
         """开启或关闭剪贴板自动监听"""
-        if hasattr(self, "_jiantie_tingzhe") and self._jiantie_tingzhe:
-            self._jiantie_tingzhe.set_enabled(bool(qiyong))
-            self._jiantie_tingzhe = bool(qiyong)
-            return {"ok": True, "enabled": self._jiantie_tingzhe}
+        if self._jiantie_jiantingqi:
+            self._jiantie_jiantingqi.set_enabled(bool(qiyong))
+            self._jiantie_qiyong = bool(qiyong)
+            return {"ok": True, "enabled": self._jiantie_qiyong}
         return {"ok": False, "error": "粘贴辅助未初始化"}
 
     def poll_events(self, xianzhi=200):
@@ -613,8 +613,8 @@ class Api:
             "当前客户",  # 对话名称
             "them",  # 角色：对方
             wenben,  # 消息内容
-            message_id="clipboard:" + str(xianzai)[:10],  # 消息ID
-            created_at=int(xianzai),  # 创建时间
+            xiaoxi_id="clipboard:" + uuid4().hex,  # 时钟精度不足时仍保证消息ID唯一
+            chuangjian_shijian=int(xianzai),  # 创建时间
         )
         self.shijian_zongxian.fabu(shijian)
 
@@ -628,8 +628,8 @@ class Api:
             xiaoxi.get("conversation_name") or xiaoxi.get("talker"),  # 对话名称
             xiaoxi.get("role", "them"),  # 角色
             xiaoxi.get("content", ""),  # 消息内容
-            message_id=xiaoxi.get("message_id") or xiaoxi.get("id", ""),  # 消息ID
-            created_at=xiaoxi.get("created_at") or xiaoxi.get("CreateTime", 0),  # 创建时间
+            xiaoxi_id=xiaoxi.get("message_id") or xiaoxi.get("id", ""),  # 消息ID
+            chuangjian_shijian=xiaoxi.get("created_at") or xiaoxi.get("CreateTime", 0),  # 创建时间
         )
         self.shijian_zongxian.fabu(shijian)
 
@@ -865,15 +865,14 @@ def zhuchengxu():
     jiantie = ClipboardMonitor()  # 创建粘贴辅助器
     jiantie.set_callback(jiekou._fabu_jiantie)  # 设置回调
     jiantie.start()  # 启动监听
-    jiekou._jiantie_tingzhe = jiantie
-    jiekou._jiantie_tingzhe = False  # 默认关闭监听
+    jiekou._jiantie_jiantingqi = jiantie
     fasongqi.set_clipboard_suppressor(jiantie.suppress)  # 设置抑制器
 
     def huoqu_weixin_mubiao():
         """获取当前聊天窗口句柄"""
         import win32gui
         import win32process
-        from wechat_probe import is_wechat_process
+        from chatapp_detector import is_chatapp_process as is_wechat_process
 
         # 候选聊天窗口列表
         houxuan_liebiao = []
@@ -946,13 +945,11 @@ def zhuchengxu():
 
     def dang_guanbi():
         """窗口关闭时的回调：停止所有组件"""
-    # 遍历所有组件列表
-    zujian_liebiao = [weixin, weixin_uia, jiantie, xifu, fasongqi.tracker]
-    for zujian in zujian_liebiao:
-        try:
-            zujian.stop()  # 停止组件
-        except Exception:
-            pass  # 忽略停止异常
+        for zujian in (weixin, weixin_uia, jiantie, xifu, fasongqi.tracker):
+            try:
+                zujian.stop()
+            except Exception:
+                pass
 
     # 绑定事件回调
     chuangkou.events.shown += dang_xianshi  # 窗口显示

@@ -10,7 +10,7 @@
 """
 import json
 from retriever import Jiansuoqi
-from reranker import Chongpaiqi
+from reranker import Chongpaiqi, DamoxingCuowu
 from stage_manager import jieduan_shangxiawen
 from storage import ZHISHIKU_LUJING, jiazai_peizhi, baocun_peizhi
 
@@ -200,6 +200,8 @@ class Tuijianqi:
         返回值:
             AI生成的草稿字典，失败返回None
         """
+        if not self.chongpaiqi.qiyong:
+            return None
         # 构建事实资料文本
         shishi = self._goujian_shishi(xiaoxi_liebiao, pipei_fenzhi=pipei_fenzhi)
         # 获取阶段提示
@@ -213,6 +215,8 @@ class Tuijianqi:
             "reply": shengcheng_jieguo["reply"],
             "used_facts": shengcheng_jieguo.get("used_facts", ""),
         }
+        if shengcheng_jieguo.get("usage"):
+            caogao["usage"] = shengcheng_jieguo["usage"]
         return caogao
 
     def shengcheng_caogao(self, xiaoxi_liebiao, jieduan=""):
@@ -226,8 +230,15 @@ class Tuijianqi:
                 guolv_hou.append(xiaoxi)
         if not guolv_hou:
             return {"draft": None}
-        caogao = self._shengcheng_caogao(guolv_hou, jieduan)
-        jieguo = {"draft": caogao}
+        if not self.chongpaiqi.qiyong:
+            return {"draft": None, "llm_error": {"code": "disabled", "message": "请先在设置中配置 API Key 并开启 AI。"}}
+        try:
+            caogao = self._shengcheng_caogao(guolv_hou, jieduan)
+        except DamoxingCuowu as cuowu:
+            return {"draft": None, "llm_error": cuowu.shuju()}
+        jieguo = {"draft": caogao, "llm_used": bool(caogao)}
+        if caogao and caogao.get("usage"):
+            jieguo["usage"] = caogao["usage"]
         return jieguo
 
     def huoqu_shu(self):
@@ -262,14 +273,16 @@ class Tuijianqi:
         jieduan_tishi = jieduan_shangxiawen(jieduan)
 
         # ===== 第一步：树感知智能搜索 =====
-        jieguo = self.jiansuoqi.zhineng_sousuo(guolv_hou, dingbu_N=8)
+        jieguo = self.jiansuoqi.zhineng_sousuo(guolv_hou, qian_k=8)
         mingzhong_liebiao = jieguo[0]  # BM25召回结果
         pipei_fenzhi = jieguo[1]        # 匹配到的树分支
 
         # 如果没有召回结果，直接生成AI草稿
         if not mingzhong_liebiao:
-            caogao = self._shengcheng_caogao(guolv_hou, jieduan, pipei_fenzhi=pipei_fenzhi)
-            return {"results": [], "llm_used": False, "draft": caogao}
+            shuchu = self.shengcheng_caogao(guolv_hou, jieduan)
+            shuchu["results"] = []
+            shuchu.setdefault("llm_used", False)
+            return shuchu
 
         # ===== 第二步：收集候选话术 =====
         houxuan = []
@@ -284,7 +297,12 @@ class Tuijianqi:
             defen_duiying[kuaizi_id] = round(fen, 2)
 
         # ===== 第三步：大模型重排序（可选）=====
-        chongpai_jieguo = self.chongpaiqi.chongpai(guolv_hou, houxuan, dingbu_N=dingbu_N, jieduan_tishi=jieduan_tishi)
+        llm_cuowu = None
+        try:
+            chongpai_jieguo = self.chongpaiqi.chongpai(guolv_hou, houxuan, zuidao_shu=dingbu_N, jieduan_tishi=jieduan_tishi)
+        except DamoxingCuowu as cuowu:
+            chongpai_jieguo = None
+            llm_cuowu = cuowu.shuju()
         AI_shiyong = chongpai_jieguo is not None
 
         if chongpai_jieguo is None:
@@ -296,6 +314,16 @@ class Tuijianqi:
         else:
             xuanzhong_jieguo = chongpai_jieguo["picks"]
             xuyao_caogao = chongpai_jieguo["need_draft"]
+
+        caogao = None
+        # 同一次推荐中模型已失败时，不再发第二次草稿请求。
+        if xuyao_caogao and not llm_cuowu:
+            try:
+                caogao = self._shengcheng_caogao(guolv_hou, jieduan, pipei_fenzhi=pipei_fenzhi)
+            except DamoxingCuowu as cuowu:
+                llm_cuowu = cuowu.shuju()
+        if llm_cuowu and not xuanzhong_jieguo:
+            xuanzhong_jieguo = [{"id": x["id"], "reason": ""} for x in houxuan[:dingbu_N]]
 
         # ===== 第四步：构建返回结果 =====
         # 构建ID到候选的映射
@@ -321,16 +349,23 @@ class Tuijianqi:
             })
             paiming = paiming + 1
 
-        # 如果需要AI草稿兜底
-        if xuyao_caogao:
-            caogao = self._shengcheng_caogao(guolv_hou, jieduan, pipei_fenzhi=pipei_fenzhi)
-        else:
-            caogao = None
-
         shuchu = {
             "results": jieguo_liebiao,
-            "llm_used": AI_shiyong,
+            "llm_used": AI_shiyong or bool(caogao),
             "draft": caogao,
             "matched_branches": pipei_fenzhi,
         }
+        if llm_cuowu:
+            shuchu["llm_error"] = llm_cuowu
+        # 汇总重排和草稿用量，避免界面漏掉第二次调用。
+        yongliang_liebiao = []
+        for jieguo_xiang in (chongpai_jieguo, caogao):
+            if jieguo_xiang and jieguo_xiang.get("usage"):
+                yongliang_liebiao.append(jieguo_xiang["usage"])
+        if yongliang_liebiao:
+            shuchu["usage"] = {
+                "call_tokens": sum(x.get("call_tokens", 0) for x in yongliang_liebiao),
+                "call_cost": round(sum(x.get("call_cost", 0) for x in yongliang_liebiao), 6),
+                "model": yongliang_liebiao[-1].get("model"),
+            }
         return shuchu

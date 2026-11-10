@@ -8,7 +8,7 @@ import time
 import win32gui
 import win32process
 
-from wechat_probe import is_wechat_process
+from chatapp_detector import is_chatapp_process as is_wechat_process
 
 POLL_INTERVAL = 1.0
 # 聊天窗口 UI 元素过滤关键词（匹配实际软件界面文本，用于区分消息内容与界面装饰元素）

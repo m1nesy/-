@@ -347,7 +347,7 @@
     <div class="row"><span>发送后自动回车</span><span class="switch" id="autoEnterSwitch">⬜</span></div>
     <hr>
     <div class="form-row" style="margin-bottom:6px"><label>API Key（填了自动开启AI）</label>
-      <input id="apiKeyInput" placeholder="留空 = 纯本地模式" style="width:100%;border:1px solid #dcdfe6;border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit">
+      <input id="apiKeyInput" type="password" autocomplete="new-password" spellcheck="false" placeholder="留空 = 纯本地模式" style="width:100%;border:1px solid #dcdfe6;border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit">
       <button onclick="saveApiKey()" style="margin-top:4px;background:#3584e4;color:#fff;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px;width:100%">保存并生效</button>
     </div>
     <hr>
@@ -542,9 +542,9 @@
 
   function renderLlmBadge() {
     const lb = document.getElementById('llmBadge');
-    lb.textContent = llmEnabled ? 'AI✓' : '本地';
+    lb.textContent = llmEnabled ? 'AI开' : '本地';
     lb.classList.toggle('off', !llmEnabled);
-    lb.title = llmEnabled ? 'AI增强中，点击切到本地' : '本地模式，点击开启AI';
+    lb.title = llmEnabled ? 'AI已开启，点击切到本地' : '本地模式，点击开启AI';
   }
 
   async function toggleListen() {
@@ -1139,6 +1139,8 @@
       if (clientIndex === activeClient && client.revision === revision && client.requestSeq === requestId) document.getElementById('results').textContent = '出错了：' + e;
       return;
     }
+    if (client.revision !== revision || client.requestSeq !== requestId || clients[activeClient] !== client) return;
+    data = data || {results: [], draft: null};
     // AI 调用后刷新用量统计 + 显示本次消耗
     if (data && data.llm_used) {
       refreshUsageStats();
@@ -1149,7 +1151,6 @@
     } else {
       document.getElementById('liveUsage').textContent = '';
     }
-    if (client.revision !== revision || client.requestSeq !== requestId || clients[activeClient] !== client) return;
     const box = document.getElementById('results'); box.innerHTML = '';
     if (data.draft) box.appendChild(makeDraftCard(data.draft));
     client.results = Array.isArray(data.results) ? data.results : [];
@@ -1162,14 +1163,21 @@
         genBtn.disabled = true; genBtn.textContent = '✨ AI 起草中…';
         try {
           const d = await api.ai_draft(msgs, stage);
-          if (d && d.usage) refreshUsageStats();
           if (clients[activeClient] !== client || client.revision !== draftRevision || client.requestSeq !== draftRequest) return;
+          if (d && d.usage) refreshUsageStats();
           if (d.draft) { box.insertBefore(makeDraftCard(d.draft), genBtn); genBtn.remove(); }
-          else { genBtn.textContent = '生成失败（检查AI是否开启），点击重试'; genBtn.disabled = false; }
+          else { genBtn.textContent = (d.llm_error?.message || d.error || '生成失败，请检查AI设置') + ' 点击重试'; genBtn.disabled = false; }
         } catch (e) { if (clients[activeClient] === client && client.revision === draftRevision) { genBtn.textContent = '生成失败，点击重试'; genBtn.disabled = false; } }
       };
       box.appendChild(genBtn);
     } else if (!data.draft) box.innerHTML = '<div class="empty-state">没匹配到合适话术<br>补充上下文或开启AI生成兜底</div>';
+    const errorMessage = data.llm_error?.message || data.error;
+    if (errorMessage) {
+      const note = document.createElement('div');
+      note.className = 'empty-state';
+      note.textContent = errorMessage + (client.results.length ? ' 已有推荐仍可使用。' : '');
+      box.appendChild(note);
+    }
     box.scrollTop = 0;
   }
 

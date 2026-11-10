@@ -5,27 +5,27 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from event_bus import EventBus
+from event_bus import Shijianzongxian
 from wechat_uia_reader import appended_items
 from wx_reader import _resolve_msg_dir
 
 
 class EventBusTests(unittest.TestCase):
     def test_structured_content_and_duplicate_guard(self):
-        bus = EventBus(maxsize=2)
-        event = EventBus.message_event(
+        bus = Shijianzongxian(zuidarongliang=2)
+        event = Shijianzongxian.xiaoxi_shijian(
             "wechat_db", "wxid_a", "客户A", "them", "报价|流程\n请说明",
-            message_id="101", created_at=10,
+            xiaoxi_id="101", chuangjian_shijian=10,
         )
-        self.assertTrue(bus.publish(event))
-        self.assertFalse(bus.publish(dict(event)))
-        self.assertEqual(bus.drain()[0]["content"], "报价|流程\n请说明")
+        self.assertTrue(bus.fabu(event))
+        self.assertFalse(bus.fabu(dict(event)))
+        self.assertEqual(bus.paikong()[0]["content"], "报价|流程\n请说明")
 
     def test_queue_is_bounded_and_reports_drop(self):
-        bus = EventBus(maxsize=1)
-        self.assertTrue(bus.publish(EventBus.message_event("clipboard", "manual", "客户", "them", "消息一", "1")))
-        self.assertFalse(bus.publish(EventBus.message_event("clipboard", "manual", "客户", "them", "消息二", "2")))
-        self.assertEqual(bus.status()["dropped"], 1)
+        bus = Shijianzongxian(zuidarongliang=1)
+        self.assertTrue(bus.fabu(Shijianzongxian.xiaoxi_shijian("clipboard", "manual", "客户", "them", "消息一", "1")))
+        self.assertFalse(bus.fabu(Shijianzongxian.xiaoxi_shijian("clipboard", "manual", "客户", "them", "消息二", "2")))
+        self.assertEqual(bus.zhuangtai()["dropped"], 1)
 
 
 class ReaderDiscoveryTests(unittest.TestCase):

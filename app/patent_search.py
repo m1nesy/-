@@ -21,7 +21,7 @@ from pypinyin import lazy_pinyin
 # 尝试从 storage 模块导入用户自定义的专利知识库路径。
 # 如果导入失败（例如 storage 模块不存在），则设为 None。
 try:
-    from storage import PATENT_KB_PATH as _YONGHU_ZHISHIKU
+    from storage import ZHUANLI_ZHISHIKU_LUJING as _YONGHU_ZHISHIKU
 except Exception:
     _YONGHU_ZHISHIKU = None
 
